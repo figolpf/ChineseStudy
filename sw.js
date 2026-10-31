@@ -1,4 +1,4 @@
-const CACHE = "zibaby-tablet-v5";
+const CACHE = "zibaby-tablet-v6";
 const FILES = [
   "./",
   "./index.html",
@@ -31,7 +31,7 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
   if (url.origin !== location.origin) return;
-  if (/\.wav$/i.test(url.pathname)) return;
+  if (/\.(wav|mp3)$/i.test(url.pathname)) return;
   event.respondWith(
     fetch(event.request).then((res) => {
       const copy = res.clone();
