@@ -624,74 +624,135 @@
     return text.indexOf(ch) !== -1;
   }
 
-  function listenChar(ch, hooks) {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let hearCancel = null;
+
+  function stopHear() {
+    if (hearCancel) hearCancel();
+    hearCancel = null;
+  }
+
+  function micDeniedText(err) {
+    const text = String((err && (err.message || err.name)) || "");
+    if (/advancedSecurityMode|坚盾/.test(text)) return "请先关闭「坚盾守护模式」，再点麦克风。";
+    if (err && (err.name === "NotAllowedError" || err.name === "SecurityError")) {
+      return "网页还不能用麦克风。请点地址栏左边的锁，允许本站使用麦克风。系统里打开还不够。";
+    }
+    if (err && err.name === "NotFoundError") return "没找到麦克风。";
+    return "麦克风打不开，请再点一次。";
+  }
+
+  function finishHeard(ch, hooks, samples, rate, t) {
+    if (!alive(t) || (hooks.still && !hooks.still())) return;
+    const result = window.Mfcc ? window.Mfcc.judge(samples, rate, ch) : "quiet";
+    if (result === "ok") hooks.onCorrect();
+    else if (result === "wrong") hooks.onWrong();
+    else {
+      const hint = document.getElementById("micHint");
+      if (hint) hint.textContent = "没听清，再点一次说吧。";
+    }
+  }
+
+  function startMicMatch(ch, hooks) {
     const hint = document.getElementById("micHint");
     const btn = document.getElementById("micBtn");
-    if (!SR || !window.isSecureContext) {
-      if (hint) hint.textContent = hooks.unavailable || "现在听不了麦克风。可以改用「听音选」，听读音后点正确的字。";
+    if (!window.isSecureContext) {
+      if (hint) hint.textContent = "请用浏览器打开这个网页（https），才能使用麦克风。";
       return;
     }
-    stopVoice();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      if (hint) hint.textContent = "这个浏览器不能打开麦克风。";
+      return;
+    }
+    stopHear();
     stopRecog();
-    const rec = new SR();
-    recog = rec;
-    rec.lang = "zh-CN";
-    rec.interimResults = true;
-    rec.maxAlternatives = 5;
-    rec.continuous = false;
+    stopVoice();
     if (btn) {
       btn.classList.add("on");
       btn.setAttribute("aria-pressed", "true");
     }
     if (hint) hint.textContent = "正在听，请说出这个字";
-    let heard = "";
-    let got = false;
-    let errored = false;
     const t = token;
-    rec.onresult = (ev) => {
-      const rows = ev.results || [];
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        for (let a = 0; a < row.length; a++) {
-          const transcript = row[a] && row[a].transcript;
-          if (a === 0 && transcript) heard = transcript;
-          if (matchHeard(transcript, ch)) got = true;
+    let stopped = false;
+    let stream = null;
+    let proc = null;
+    let source = null;
+    let mute = null;
+    const chunks = [];
+    const cleanup = () => {
+      stopped = true;
+      if (proc) {
+        proc.onaudioprocess = null;
+        try { proc.disconnect(); } catch (e) { /* 已经断开 */ }
+      }
+      if (source) { try { source.disconnect(); } catch (e) { /* 已经断开 */ } }
+      if (mute) { try { mute.disconnect(); } catch (e) { /* 已经断开 */ } }
+      if (stream) stream.getTracks().forEach((track) => track.stop());
+      proc = null;
+      source = null;
+      mute = null;
+      stream = null;
+      if (hearCancel === cancel) hearCancel = null;
+      const liveBtn = document.getElementById("micBtn");
+      if (liveBtn) {
+        liveBtn.classList.remove("on");
+        liveBtn.setAttribute("aria-pressed", "false");
+      }
+    };
+    const cancel = () => cleanup();
+    hearCancel = cancel;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx && !audioCtx) audioCtx = new Ctx();
+    if (audioCtx) {
+      const resume = audioCtx.resume();
+      if (resume && resume.catch) resume.catch(() => {});
+    }
+    navigator.mediaDevices.getUserMedia({ audio: true }).then((s) => {
+      if (stopped || !alive(t)) {
+        s.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      stream = s;
+      const ctx = audioCtx;
+      if (!ctx || !ctx.createScriptProcessor) {
+        cleanup();
+        if (hint) hint.textContent = "这个浏览器不能打开麦克风。";
+        return;
+      }
+      const resume = ctx.resume();
+      if (resume && resume.catch) resume.catch(() => {});
+      source = ctx.createMediaStreamSource(stream);
+      proc = ctx.createScriptProcessor(4096, 1, 1);
+      mute = ctx.createGain();
+      mute.gain.value = 0;
+      proc.onaudioprocess = (e) => {
+        if (stopped) return;
+        chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      };
+      source.connect(proc);
+      proc.connect(mute);
+      mute.connect(ctx.destination);
+      setTimeout(() => {
+        if (stopped || !alive(t)) return;
+        const rate = ctx.sampleRate || 16000;
+        let total = 0;
+        for (let i = 0; i < chunks.length; i++) total += chunks[i].length;
+        const samples = new Float32Array(total);
+        let offset = 0;
+        for (let i = 0; i < chunks.length; i++) {
+          samples.set(chunks[i], offset);
+          offset += chunks[i].length;
         }
-      }
-    };
-    rec.onerror = (ev) => {
-      errored = true;
-      if (!hint) return;
-      if (ev.error === "not-allowed" || ev.error === "service-not-allowed") {
-        hint.textContent = "要允许使用麦克风，才能听你读字。";
-      } else if (ev.error === "network") {
-        hint.textContent = "现在听不了麦克风。请再点一次。";
-      } else if (ev.error === "no-speech") {
-        hint.textContent = "没听清，再点一次说吧。";
-      } else if (ev.error !== "aborted") {
-        hint.textContent = "再点一次，说出这个字。";
-      }
-    };
-    rec.onend = () => {
-      if (btn) {
-        btn.classList.remove("on");
-        btn.setAttribute("aria-pressed", "false");
-      }
-      if (recog === rec) recog = null;
-      if (!alive(t) || errored) return;
-      if (hooks.still && !hooks.still()) return;
-      if (got) hooks.onCorrect();
-      else if (heard) hooks.onWrong();
-      else if (hint) hint.textContent = "没听清，再点一次说吧。";
-    };
-    setTimeout(() => {
-      if (recog !== rec) return;
-      try { rec.start(); } catch (e) {
-        if (hint) hint.textContent = "麦克风还没准备好，再点一次。";
-        stopRecog();
-      }
-    }, 200);
+        cleanup();
+        finishHeard(ch, hooks, samples, rate, t);
+      }, 2000);
+    }).catch((err) => {
+      cleanup();
+      if (hint && alive(t)) hint.textContent = micDeniedText(err);
+    });
+  }
+
+  function listenChar(ch, hooks) {
+    startMicMatch(ch, hooks);
   }
 
   function startSpeakQuiz() {
@@ -1229,6 +1290,7 @@
     token++;
     stopVoice();
     stopRecog();
+    stopHear();
     writer = null;
     state.quiz = null;
     overlay.innerHTML = "";
@@ -1263,6 +1325,7 @@
     token++;
     stopVoice();
     stopRecog();
+    stopHear();
     fillPanel(token);
   }
 

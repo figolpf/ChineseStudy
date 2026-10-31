@@ -1,4 +1,4 @@
-const CACHE = "zibaby-tablet-v4";
+const CACHE = "zibaby-tablet-v5";
 const FILES = [
   "./",
   "./index.html",
@@ -8,6 +8,8 @@ const FILES = [
   "./js/curriculum.js",
   "./js/illustrations.js",
   "./js/voices.js",
+  "./js/mfcc.js",
+  "./js/syllables.js",
   "./js/strokes.js",
   "./vendor/hanzi-writer.min.js",
   "./icons/icon-192.png",
