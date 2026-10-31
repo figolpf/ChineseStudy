@@ -551,6 +551,42 @@ body.hide-py .py { display: none !important; }
 
 .mode-switch button.on { background: #fff; box-shadow: 0 3px 0 #eadfce; }
 
+.read-list {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+
+.read-list b {
+  width: 1.7em;
+  height: 1.7em;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: #fff;
+  color: #c8b39a;
+  font-size: min(28px, 4.2dvh);
+  line-height: 1;
+}
+
+.read-list b.now {
+  color: var(--ink);
+  box-shadow: 0 0 0 3px var(--gold);
+}
+
+.read-list b.done {
+  color: var(--good);
+  background: #e5f7f1;
+}
+
+.read-title {
+  font-size: min(40px, 8dvh);
+  font-weight: 400;
+  margin: 8px 0;
+}
+
 .say-glyph {
   font-size: min(168px, 28vw, 30dvh);
   line-height: 1;

@@ -24,7 +24,8 @@
     game: null,
     quiz: null,
     drill: "speak",
-    listen: null
+    listen: null,
+    read: null
   };
 
   function loadPrefs() {
@@ -396,6 +397,7 @@
     const review = learned >= 3
       ? `<button class="btn" data-act="review">复习学过的字</button>`
       : "";
+    const readGo = `<button class="btn" data-act="read-go" data-level="1">看字读音闯关</button>`;
     return `<main class="shell">
       <header class="topbar">
         <button class="icon-btn ${prefs.sound ? "on" : ""}" data-act="sound" aria-label="${prefs.sound ? "关闭声音" : "打开声音"}">${iconSpeaker()}</button>
@@ -410,7 +412,7 @@
       <div class="actions" style="margin-bottom:16px">${go}</div>
       <section class="levels">${cards}</section>
       <p class="progress-line">已经认识 <b>${learned}</b> 个字</p>
-      <div class="actions">${review}</div>
+      <div class="actions">${readGo}${review}</div>
       <p class="progress-line">适合 3–6 岁，和爸爸妈妈一起读。</p>
     </main>`;
   }
@@ -420,7 +422,7 @@
     const body = state.level === 4 ? wordGrid() : charGrid();
     const play = state.level === 4
       ? `<div class="actions"><button class="btn primary wide" data-act="play-words">开始找词</button></div>`
-      : "";
+      : `<div class="actions"><button class="btn primary wide" data-act="read-go" data-level="${state.level}">看字读音闯关</button></div>`;
     return `<main class="shell">
       <header class="topbar">
         <button class="icon-btn" data-act="home" aria-label="返回首页">${iconBack()}</button>
@@ -622,17 +624,16 @@
     return text.indexOf(ch) !== -1;
   }
 
-  function startSpeakQuiz() {
+  function listenChar(ch, hooks) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     const hint = document.getElementById("micHint");
     const btn = document.getElementById("micBtn");
     if (!SR || !window.isSecureContext) {
-      if (hint) hint.textContent = "现在听不了麦克风。可以改用「听音选」，听读音后点正确的字。";
+      if (hint) hint.textContent = hooks.unavailable || "现在听不了麦克风。可以改用「听音选」，听读音后点正确的字。";
       return;
     }
     stopVoice();
     stopRecog();
-    const item = current();
     const rec = new SR();
     recog = rec;
     rec.lang = "zh-CN";
@@ -655,7 +656,7 @@
         for (let a = 0; a < row.length; a++) {
           const transcript = row[a] && row[a].transcript;
           if (a === 0 && transcript) heard = transcript;
-          if (matchHeard(transcript, item.char)) got = true;
+          if (matchHeard(transcript, ch)) got = true;
         }
       }
     };
@@ -663,9 +664,9 @@
       errored = true;
       if (!hint) return;
       if (ev.error === "not-allowed" || ev.error === "service-not-allowed") {
-        hint.textContent = "要允许使用麦克风，才能听你读字。也可以改用「听音选」。";
+        hint.textContent = "要允许使用麦克风，才能听你读字。";
       } else if (ev.error === "network") {
-        hint.textContent = "现在听不了麦克风。可以改用「听音选」。";
+        hint.textContent = "现在听不了麦克风。请再点一次。";
       } else if (ev.error === "no-speech") {
         hint.textContent = "没听清，再点一次说吧。";
       } else if (ev.error !== "aborted") {
@@ -678,9 +679,10 @@
         btn.setAttribute("aria-pressed", "false");
       }
       if (recog === rec) recog = null;
-      if (!alive(t) || state.tab !== "drill" || state.drill === "listen" || errored) return;
-      if (got) praiseSpeak(item.char);
-      else if (heard) missSpeak();
+      if (!alive(t) || errored) return;
+      if (hooks.still && !hooks.still()) return;
+      if (got) hooks.onCorrect();
+      else if (heard) hooks.onWrong();
       else if (hint) hint.textContent = "没听清，再点一次说吧。";
     };
     setTimeout(() => {
@@ -690,6 +692,86 @@
         stopRecog();
       }
     }, 200);
+  }
+
+  function startSpeakQuiz() {
+    const item = current();
+    listenChar(item.char, {
+      still() { return state.tab === "drill" && state.drill !== "listen"; },
+      onCorrect() { praiseSpeak(item.char); },
+      onWrong() { missSpeak(); }
+    });
+  }
+
+  function startRead(level) {
+    const chars = CHARS.filter((c) => c.level === level).map((c) => c.char);
+    if (!chars.length) return;
+    state.level = level;
+    state.screen = "read";
+    state.returnTo = null;
+    state.read = { chars: chars, index: 0, cleared: {}, busy: false };
+    render();
+  }
+
+  function startReadMic() {
+    const r = state.read;
+    if (!r || r.busy || r.index >= r.chars.length) return;
+    const ch = r.chars[r.index];
+    listenChar(ch, {
+      unavailable: "现在听不了麦克风。请允许使用麦克风后再点一次。",
+      still() {
+        return state.screen === "read" && state.read && state.read.chars[state.read.index] === ch;
+      },
+      onCorrect() { passRead(ch); },
+      onWrong() { missSpeak(); }
+    });
+  }
+
+  async function passRead(ch) {
+    const r = state.read;
+    if (!r || r.busy || r.chars[r.index] !== ch) return;
+    r.busy = true;
+    await praiseSpeak(ch);
+    if (state.screen !== "read" || !state.read || state.read.chars[state.read.index] !== ch) return;
+    state.read.cleared[ch] = true;
+    state.read.index += 1;
+    state.read.busy = false;
+    render();
+  }
+
+  function viewRead() {
+    const r = state.read;
+    const lv = LEVELS.find((item) => item.id === state.level);
+    const total = r.chars.length;
+    const done = r.index >= total;
+    const list = `<div class="read-list" aria-label="这一关的字">${r.chars.map((ch, i) => {
+      const cls = r.cleared[ch] ? "done" : i === r.index ? "now" : "";
+      return `<b class="kai ${cls}">${ch}</b>`;
+    }).join("")}</div>`;
+    const body = done
+      ? `<div class="card drill">
+          <h2 class="kai read-title">读完啦</h2>
+          <p class="story">这一关 ${total} 个字都读过了。</p>
+          <div class="actions">
+            ${state.level < 3 ? `<button class="btn primary" data-act="read-go" data-level="${state.level + 1}">下一关</button>` : ""}
+            <button class="btn" data-act="back">返回</button>
+          </div>
+        </div>`
+      : `<div class="card drill">
+          <p class="hint">看着这个字，点麦克风读出来。</p>
+          <div class="say-glyph kai">${r.chars[r.index]}</div>
+          <button class="mic-btn" id="micBtn" data-act="read-mic" aria-label="说出这个字" aria-pressed="false">${iconMic()}</button>
+          <p class="hint" id="micHint">点一下，开始说</p>
+        </div>`;
+    return `<main class="shell">
+      <header class="topbar">
+        <button class="icon-btn" data-act="back" aria-label="返回">${iconBack()}</button>
+        <div class="who"><strong>看字读音</strong><span class="word">${lv ? lv.name : ""}</span></div>
+      </header>
+      <p class="progress-line">${done ? "闯关完成" : `第 ${r.index + 1} 个，共 ${total} 个`}</p>
+      ${list}
+      ${body}
+    </main>`;
   }
 
   async function praiseSpeak(ch) {
@@ -1151,7 +1233,7 @@
     state.quiz = null;
     overlay.innerHTML = "";
     applyBody();
-    const views = { home: viewHome, level: viewLevel, learn: viewLearn, word: viewWord, game: viewGame };
+    const views = { home: viewHome, level: viewLevel, learn: viewLearn, word: viewWord, game: viewGame, read: viewRead };
     app.innerHTML = views[state.screen]();
     const t = token;
     if (state.screen === "learn") fillPanel(t);
@@ -1209,6 +1291,10 @@
       state.word = word;
       state.level = 4;
       render();
+      return;
+    }
+    if (state.screen === "read") {
+      openLevel(state.level);
       return;
     }
     if (state.screen === "home") return;
@@ -1346,6 +1432,14 @@
     }
     if (act === "mic") {
       startSpeakQuiz();
+      return;
+    }
+    if (act === "read-go") {
+      startRead(Number(btn.dataset.level) || 1);
+      return;
+    }
+    if (act === "read-mic") {
+      startReadMic();
       return;
     }
     if (act === "listen-hear") {
