@@ -1,4 +1,4 @@
-const CACHE = "zibaby-tablet-v2";
+const CACHE = "zibaby-tablet-v3";
 const FILES = [
   "./",
   "./index.html",
