@@ -116,20 +116,64 @@
     return new Promise((resolve) => requestAnimationFrame(() => resolve()));
   }
 
+  let voiceEl = null;
+  let clipStop = null;
+
+  function voiceElement() {
+    if (!voiceEl) {
+      voiceEl = new Audio();
+      voiceEl.preload = "auto";
+      voiceEl.setAttribute("playsinline", "");
+      voiceEl.setAttribute("webkit-playsinline", "");
+    }
+    return voiceEl;
+  }
+
+  function unlockSound() {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (Ctx) {
+        if (!audioCtx) audioCtx = new Ctx();
+        const resume = audioCtx.resume();
+        if (resume && resume.catch) resume.catch(() => {});
+        if (audioCtx.state !== "running") {
+          const buf = audioCtx.createBuffer(1, 1, 22050);
+          const src = audioCtx.createBufferSource();
+          src.buffer = buf;
+          src.connect(audioCtx.destination);
+          src.start(0);
+        }
+      }
+    } catch (e) { /* 平板上没有提示音也不拦认字 */ }
+    try {
+      const el = voiceElement();
+      if (!el.getAttribute("data-warm")) {
+        el.setAttribute("data-warm", "1");
+        el.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+        const p = el.play();
+        if (p && p.catch) p.catch(() => {});
+      }
+    } catch (e) { /* 忽略 */ }
+    if (window.speechSynthesis) {
+      try { speechSynthesis.resume(); } catch (e) { /* 忽略 */ }
+    }
+  }
+
   function tone(freq, dur) {
     if (!prefs.sound) return;
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return;
       if (!audioCtx) audioCtx = new Ctx();
-      if (audioCtx.state === "suspended") audioCtx.resume();
+      const resume = audioCtx.resume();
+      if (resume && resume.catch) resume.catch(() => {});
       const o = audioCtx.createOscillator();
       const g = audioCtx.createGain();
       o.type = "sine";
       o.frequency.value = freq;
       const now = audioCtx.currentTime;
       g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.07, now + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.18, now + 0.02);
       g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
       o.connect(g);
       g.connect(audioCtx.destination);
@@ -139,20 +183,67 @@
   }
 
   function chime() {
-    [523, 659, 784].forEach((f, i) => setTimeout(() => tone(f, 0.12), i * 90));
+    [523, 659, 784].forEach((f, i) => setTimeout(() => tone(f, 0.14), i * 90));
   }
 
   function pickVoice() {
     const voices = window.speechSynthesis ? speechSynthesis.getVoices() : [];
-    return voices.find((v) => /zh(-|_)CN|cmn-Hans/i.test(v.lang) && /xiaoxiao|huihui|yaoyao|tingting|sinji|chinese|中文/i.test(v.name))
-      || voices.find((v) => /zh(-|_)CN|cmn/i.test(v.lang))
-      || voices.find((v) => /zh|chinese|中文/i.test((v.lang || "") + (v.name || "")))
+    const zh = voices.filter((v) => /zh|cmn|chinese|中文/i.test((v.lang || "") + " " + (v.name || "")));
+    return zh.find((v) => v.localService)
+      || zh.find((v) => /zh(-|_)CN|cmn-Hans/i.test(v.lang || ""))
+      || zh[0]
       || null;
   }
 
-  function speak(text) {
-    const gen = ++speakGen;
+  function playClip(text, gen) {
+    const url = window.VOICE_CLIPS && window.VOICE_CLIPS[text];
+    if (!url) return Promise.resolve(false);
     return new Promise((resolve) => {
+      const el = voiceElement();
+      let settled = false;
+      let started = false;
+      const finish = (ok) => {
+        if (settled) return;
+        settled = true;
+        if (clipStop === cancel) clipStop = null;
+        el.onended = null;
+        el.onerror = null;
+        resolve(!!ok);
+      };
+      const cancel = () => finish(false);
+      clipStop = cancel;
+      el.onended = () => finish(true);
+      el.onerror = () => finish(false);
+      try {
+        el.volume = 1;
+        el.muted = false;
+        el.playbackRate = prefs.slow ? 0.82 : 1;
+      } catch (e) { /* 有的浏览器要等音频就绪才能改速度 */ }
+      el.setAttribute("data-warm", "2");
+      el.src = url;
+      const begin = () => {
+        if (settled || gen !== speakGen) {
+          finish(false);
+          return;
+        }
+        const p = el.play();
+        if (p && p.then) p.then(() => { started = true; }).catch(() => finish(false));
+        else started = true;
+      };
+      begin();
+      setTimeout(() => {
+        if (!settled && !started && gen === speakGen && el.paused) begin();
+      }, 400);
+      setTimeout(() => finish(started), 1600 + String(text).length * 420);
+    });
+  }
+
+  function speakEngine(text, gen) {
+    return new Promise((resolve) => {
+      if (!window.speechSynthesis) {
+        setTimeout(resolve, 700);
+        return;
+      }
       let settled = false;
       let kick = null;
       const finish = () => {
@@ -161,46 +252,74 @@
         if (kick) clearInterval(kick);
         resolve();
       };
-      if (!prefs.sound || !text || !window.speechSynthesis) {
-        setTimeout(finish, 700);
-        return;
-      }
       const u = new SpeechSynthesisUtterance(text);
       u.lang = "zh-CN";
-      u.rate = prefs.slow ? 0.72 : 0.88;
+      u.rate = prefs.slow ? 0.7 : 0.85;
       u.pitch = 1.05;
       u.volume = 1;
       const voice = pickVoice();
       if (voice) u.voice = voice;
       u.onend = finish;
       u.onerror = finish;
-      try {
-        speechSynthesis.cancel();
-        speechSynthesis.resume();
-        setTimeout(() => {
+      const start = () => {
+        if (gen !== speakGen) {
+          finish();
+          return;
+        }
+        try {
+          speechSynthesis.resume();
+          speechSynthesis.speak(u);
+          speechSynthesis.resume();
+        } catch (e) {
+          finish();
+          return;
+        }
+        kick = setInterval(() => {
           if (gen !== speakGen) {
             finish();
             return;
           }
-          speechSynthesis.resume();
-          speechSynthesis.speak(u);
-          kick = setInterval(() => {
-            if (gen !== speakGen) {
-              finish();
-              return;
-            }
-            if (speechSynthesis.paused) speechSynthesis.resume();
-          }, 250);
-        }, 120);
+          try {
+            if (speechSynthesis.speaking || speechSynthesis.paused) speechSynthesis.resume();
+          } catch (e) { /* 忽略 */ }
+        }, 200);
+      };
+      try {
+        if (speechSynthesis.speaking || speechSynthesis.pending) {
+          speechSynthesis.cancel();
+          setTimeout(start, 160);
+        } else start();
       } catch (e) {
         finish();
       }
-      setTimeout(finish, 900 + String(text).length * 420);
+      setTimeout(finish, 1000 + String(text).length * 420);
+    });
+  }
+
+  function speak(text) {
+    const gen = ++speakGen;
+    const said = text == null ? "" : String(text);
+    return new Promise((resolve) => {
+      if (!prefs.sound || !said) {
+        setTimeout(resolve, 400);
+        return;
+      }
+      playClip(said, gen).then((ok) => {
+        if (gen !== speakGen || ok) {
+          resolve();
+          return;
+        }
+        speakEngine(said, gen).then(resolve);
+      });
     });
   }
 
   function stopVoice() {
     speakGen++;
+    if (clipStop) clipStop();
+    if (voiceEl) {
+      try { voiceEl.pause(); } catch (e) { /* 忽略 */ }
+    }
     try { speechSynthesis.cancel(); } catch (e) { /* 忽略 */ }
   }
 
@@ -1115,6 +1234,7 @@
   }
 
   function onClick(e) {
+    unlockSound();
     const btn = e.target.closest("[data-act]");
     if (!btn || btn.disabled) return;
     const act = btn.dataset.act;
@@ -1267,9 +1387,7 @@
     speechSynthesis.getVoices();
     speechSynthesis.addEventListener("voiceschanged", () => speechSynthesis.getVoices());
   }
-  document.addEventListener("pointerdown", () => {
-    if (window.speechSynthesis) speechSynthesis.resume();
-  }, { once: true });
+  document.addEventListener("pointerdown", unlockSound, { capture: true });
   applyBody();
   render();
 })();

@@ -1,4 +1,4 @@
-const CACHE = "zibaby-tablet-v1";
+const CACHE = "zibaby-tablet-v2";
 const FILES = [
   "./",
   "./index.html",
@@ -7,6 +7,7 @@ const FILES = [
   "./js/app.js",
   "./js/curriculum.js",
   "./js/illustrations.js",
+  "./js/voices.js",
   "./js/strokes.js",
   "./vendor/hanzi-writer.min.js",
   "./icons/icon-192.png",
@@ -26,7 +27,14 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+  const url = new URL(event.request.url);
+  if (url.origin !== location.origin) return;
+  if (/\.wav$/i.test(url.pathname)) return;
   event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request))
+    fetch(event.request).then((res) => {
+      const copy = res.clone();
+      caches.open(CACHE).then((cache) => cache.put(event.request, copy)).catch(function () {});
+      return res;
+    }).catch(() => caches.match(event.request))
   );
 });
